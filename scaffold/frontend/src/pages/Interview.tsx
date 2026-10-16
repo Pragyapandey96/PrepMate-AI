@@ -1,5 +1,5 @@
 import { FormEvent, useEffect, useRef, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import { api } from '../services/api';
 import { LiveAudioSession } from '../services/live-audio';
 
@@ -24,11 +24,13 @@ export function Interview() {
   const transcriptEndRef = useRef<HTMLDivElement | null>(null);
   const startedRef = useRef(false);
   const endingRef = useRef(false);
+  const serverErrorRef = useRef('');
   const endAckRef = useRef<(() => void) | null>(null);
   const limitCompletionPendingRef = useRef(false);
 
   useEffect(() => {
     let disposed = false;
+    serverErrorRef.current = '';
     const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:';
     const token = encodeURIComponent(localStorage.getItem('pm.token') || '');
     const ws = new WebSocket(`${scheme}//${location.host}/ws/voice?sessionId=${encodeURIComponent(id || '')}&mode=${mode}&token=${token}`);
@@ -39,8 +41,9 @@ export function Interview() {
       let msg: any;
       try { msg = JSON.parse(event.data); } catch { return; }
       if (msg.type === 'error') {
+        serverErrorRef.current = msg.message || 'The interview could not continue.';
         audioRef.current?.stopMicrophone();
-        setError(msg.message || 'The interview could not continue.');
+        setError(serverErrorRef.current);
         setStatus('error');
       } else if (msg.type === 'ready') {
         setConnected(true);
@@ -85,7 +88,8 @@ export function Interview() {
     ws.onopen = () => { if (!disposed) setStatus('connecting'); };
     ws.onerror = () => {
       if (!disposed) {
-        setError('Could not connect to the interview service. Check your connection and try again.');
+        const message = 'Could not connect to the interview service. Check your connection and try again.';
+        setError(previous => previous || message);
         setStatus('error');
       }
     };
@@ -93,9 +97,10 @@ export function Interview() {
       if (wsRef.current === ws) setConnected(false);
       if (!disposed && !endingRef.current) {
         audioRef.current?.stopMicrophone();
-        setError(startedRef.current
+        const message = startedRef.current
           ? 'The live connection closed. Your saved transcript is available; end the interview to generate its report.'
-          : 'The interview connection closed before it started. Check your login or choose the text interview.');
+          : 'The interview connection closed before it started. Check your login or choose the text interview.';
+        setError(previous => previous || serverErrorRef.current || message);
         setStatus('error');
       }
     };
@@ -111,7 +116,8 @@ export function Interview() {
   }, [id, mode]);
 
   useEffect(() => {
-    transcriptEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    const behavior = window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth';
+    transcriptEndRef.current?.scrollIntoView({ behavior });
   }, [transcript, interim]);
 
   async function startLiveInterview() {
@@ -197,45 +203,16 @@ export function Interview() {
     thinking: 'Thinking', answering: 'Your turn', error: 'Error', ending: 'Ending', ended: 'Ended',
   };
 
-  return (
-    <div className="min-h-screen flex flex-col bg-[var(--bg)]">
-      <header className="min-h-14 border-b bg-white flex items-center px-6 py-3 gap-4">
-        <div className="font-semibold">PrepMate AI · {mode === 'live' ? 'Live Voice Interview' : 'Text Interview'}</div>
-        <div className="ml-auto flex items-center gap-2 text-xs mono uppercase text-neutral-500">
-          <span className={`w-2 h-2 rounded-full ${status === 'listening' || status === 'connected' || status === 'answering' ? 'bg-emerald-500' : status === 'ai-speaking' || status === 'thinking' ? 'bg-accent' : status === 'error' ? 'bg-red-500' : 'bg-neutral-400'}`} />
-          {statusLabel[status]}
-        </div>
-      </header>
-
-      <main className="max-w-3xl mx-auto w-full py-10 px-6 flex-1">
-        {mode === 'live' && <div className="mb-8 rounded-lg border border-indigo-200 bg-indigo-50 px-4 py-3 text-sm text-indigo-900">Your microphone audio streams securely through the authenticated backend to Gemini Live. Gemini’s audio and transcript return through the same session.</div>}
-        {!connected && !error && <p className="text-sm text-neutral-500">Connecting to your interview…</p>}
-        {transcript.map((turn, index) => (
-          <div key={`${index}-${turn.speaker}`} className="mb-6 flex gap-4">
-            <div className="w-24 shrink-0 text-xs uppercase text-neutral-400 mono pt-1">{turn.speaker === 'ai' ? 'AI Interviewer' : 'You'}</div>
-            <div className={`flex-1 whitespace-pre-wrap text-[16px] leading-relaxed ${turn.speaker === 'user' ? 'text-neutral-600' : ''}`}>{turn.text}</div>
-          </div>
-        ))}
-        {interim && <div className="mb-6 flex gap-4"><div className="w-24 shrink-0 text-xs uppercase text-neutral-400 mono pt-1">{interim.speaker === 'ai' ? 'AI Interviewer' : 'You'}</div><div className="flex-1 text-neutral-400 italic">{interim.text}…</div></div>}
-        <div ref={transcriptEndRef} />
-        {error && <div role="alert" className="mb-4 rounded-md bg-red-50 p-3 text-sm text-red-700">{error}</div>}
-      </main>
-
-      <div className="sticky bottom-0 border-t bg-white px-4 py-4">
-        {mode === 'text' && <form onSubmit={submitAnswer} className="max-w-3xl mx-auto mb-3 flex items-end gap-3">
-          <label className="flex-1 text-sm text-neutral-600">Your answer
-            <textarea value={answer} onChange={(event) => setAnswer(event.target.value)} disabled={!connected || status !== 'answering'} placeholder={status === 'thinking' ? 'Gemini is preparing the next question…' : 'Type your answer here'} rows={3} className="mt-1 block w-full resize-y rounded-md border border-neutral-300 p-3 text-neutral-900 outline-none focus:border-indigo-500 disabled:bg-neutral-100" />
-          </label>
-          <button type="submit" disabled={!connected || status !== 'answering' || !answer.trim()} className="rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-50">Send answer</button>
-        </form>}
-        <div className="max-w-3xl mx-auto flex flex-wrap items-center gap-3">
-          {mode === 'live' && !started && <button onClick={startLiveInterview} disabled={!connected || status === 'error'} className="rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-50">Start Live Voice Interview</button>}
-          {mode === 'live' && started && <button onClick={toggleMute} disabled={status === 'ending' || status === 'ended'} className="rounded-md border px-4 py-2 text-sm">{muted ? 'Unmute' : 'Mute'}</button>}
-          {mode === 'live' && !started && <button onClick={() => { setTranscript([]); setInterim(null); setError(''); setMode('text'); }} className="rounded-md border px-4 py-2 text-sm">Use text interview</button>}
-          {mode === 'text' && !started && <button onClick={() => { setTranscript([]); setInterim(null); setError(''); setMode('live'); }} className="rounded-md border px-4 py-2 text-sm">Try Live Voice Interview</button>}
-          {status !== 'ending' && status !== 'ended' && <button onClick={endInterview} className="rounded-md px-3 py-2 text-sm text-red-600 hover:bg-red-50">End interview</button>}
-        </div>
+  const lastQuestion = [...transcript].reverse().find(turn => turn.speaker === 'ai');
+  return <div className="pm-interview-page">
+    <header className="pm-interview-header"><Link to="/dashboard" className="pm-brand"><span className="pm-brand-mark">✦</span><span>PrepMate AI <small>STUDIO</small></span></Link><span className="pm-status-pill" aria-live="polite">● {statusLabel[status]}</span><span className="pm-status-pill">{mode === 'live' ? 'Live voice' : 'Text interview'}</span></header>
+    <main className="pm-interview-shell"><div className="pm-interview-grid"><section className="pm-interview-main">
+      <div className="pm-card pm-voice-card" data-state={status} data-mode={mode} aria-live="polite"><div className="pm-voice-indicator">{mode === 'live' ? '♩' : '✎'}</div><p>{connected ? (status === 'listening' ? 'Listening to your response…' : status === 'ai-speaking' ? 'Your interviewer is speaking…' : status === 'thinking' ? 'Preparing the next question…' : 'Interview session connected') : 'Connecting to your interview session…'}</p></div>
+      <div className="pm-card pm-question-card"><span className="pm-eyebrow">AI interviewer prompt</span><span className="pm-status-pill" style={{float:'right'}}>{statusLabel[status]}</span>{lastQuestion ? <h1>{lastQuestion.text}</h1> : <h1>{connected ? 'Your interview is ready.' : 'Connecting to your interview…'}</h1>}{interim && <div className="pm-turn ai"><span className="pm-turn-label">{interim.speaker === 'ai' ? 'Interviewer' : 'You'} · live transcript</span><p>{interim.text}…</p></div>}{!lastQuestion && mode === 'live' && <p className="pm-muted">Start the voice session when you are ready.</p>}
+        {error && <div role="alert" className="pm-alert">{error}</div>}
+        {mode === 'text' && <form onSubmit={submitAnswer} className="pm-answer-form"><label>Your answer<textarea value={answer} onChange={event => setAnswer(event.target.value)} disabled={!connected || status !== 'answering'} placeholder={status === 'thinking' ? 'Preparing the next question…' : 'Type your answer here'} rows={3}/></label><button className="pm-button pm-button-primary" type="submit" disabled={!connected || status !== 'answering' || !answer.trim()}>Send answer</button></form>}
       </div>
-    </div>
-  );
+      <div className="pm-control-bar">{mode === 'live' && !started && <button className="pm-button pm-button-primary" onClick={startLiveInterview} disabled={!connected || status === 'error'}>Start voice interview</button>}{mode === 'live' && started && <button onClick={toggleMute} disabled={status === 'ending' || status === 'ended'}>{muted ? 'Unmute microphone' : 'Mute microphone'}</button>}{mode === 'live' && !started && <button onClick={() => { setTranscript([]); setInterim(null); setError(''); setMode('text'); }}>Switch to text</button>}{mode === 'text' && !started && <button onClick={() => { setTranscript([]); setInterim(null); setError(''); setMode('live'); }}>Switch to voice</button>}{status !== 'ending' && status !== 'ended' && <button className="pm-end-button" onClick={endInterview}>End interview</button>}</div>
+    </section><aside className="pm-card pm-transcript"><div className="pm-panel-head"><h2 className="pm-card-title">Transcript</h2><span className="pm-eyebrow">{transcript.length} turns</span></div>{transcript.length ? transcript.map((turn,index)=><article key={`${index}-${turn.speaker}`} className={`pm-turn ${turn.speaker === 'ai' ? 'ai' : 'user'}`}><span className="pm-turn-label">{turn.speaker === 'ai' ? 'AI interviewer' : 'You'}</span><p>{turn.text}</p></article>) : <p className="pm-page-subtitle">Your conversation will appear here as you practice.</p>}{interim && <div ref={transcriptEndRef}/>}</aside></div></main>
+  </div>;
 }

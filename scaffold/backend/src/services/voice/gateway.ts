@@ -4,6 +4,7 @@ import { GeminiLiveProvider } from './gemini-live.js';
 import type { VoiceProvider } from './provider.js';
 import { Interview, Resume, JobDescription } from '../../models/index.js';
 import jwt from 'jsonwebtoken';
+import { checkCompatibility } from '../compatibility.js';
 
 const requestedProvider = process.env.VOICE_PROVIDER || 'web-speech';
 console.log(`[voice] configured provider: ${requestedProvider}`);
@@ -32,13 +33,20 @@ export function attachVoiceGateway(wss: WebSocketServer) {
       const interview = await Interview.findOne({ _id: sessionId, userId });
       if (!interview) { ws.close(4404, 'session_not_found'); return; }
       if (interview.status !== 'created' && interview.status !== 'in_progress') { ws.close(4409, 'session_not_active'); return; }
-      interview.status = 'in_progress';
-      interview.startedAt ||= new Date();
-      await interview.save();
       const [resume, jd] = await Promise.all([
         Resume.findOne({ _id: interview.resumeId, userId }),
         JobDescription.findOne({ _id: interview.jdId, userId }),
       ]);
+
+      if (!resume || !jd) { ws.close(4404, 'resume_or_job_description_not_found'); return; }
+      if (!interview.compatibility?.matches) {
+        const compatibility = await checkCompatibility(resume.sourceText || '', resume.extracted, jd.raw || '', jd.extracted);
+        interview.compatibility = compatibility;
+        if (!compatibility.matches) { await interview.save(); ws.close(4403, 'resume_job_mismatch'); return; }
+      }
+      interview.status = 'in_progress';
+      interview.startedAt ||= new Date();
+      await interview.save();
 
       const systemPrompt = buildSystemPrompt({ resume: resume?.extracted, jd: jd?.extracted, interview });
       const provider: VoiceProvider = mode === 'live' ? new GeminiLiveProvider() : new WebSpeechProvider();
@@ -58,8 +66,15 @@ export function attachVoiceGateway(wss: WebSocketServer) {
         },
       });
     } catch (e) {
-      console.error('[ws] gateway error', e);
-      ws.close(1011, 'gateway_error');
+      const err = e instanceof Error ? e : new Error('Unknown WebSocket gateway error');
+      console.error('[ws] gateway error', { name: err.name, message: err.message.replace(/([?&]key=)[^&\s]+/gi, '$1[redacted]') });
+      if (ws.readyState === ws.OPEN) {
+        ws.send(JSON.stringify({
+          type: 'error',
+          message: 'The interview service could not start. Check backend configuration and server logs, then try again.',
+        }));
+        ws.close(1011, 'gateway_error');
+      }
     }
   });
 }

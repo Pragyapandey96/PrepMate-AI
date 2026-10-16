@@ -2,6 +2,10 @@
 
 const token = () => localStorage.getItem('pm.token') || '';
 
+export class ApiError extends Error {
+  constructor(public status: number, public body: any, message: string) { super(message); }
+}
+
 async function json<T>(path: string, init: RequestInit = {}): Promise<T> {
   const res = await fetch(`/api${path}`, {
     ...init,
@@ -11,7 +15,12 @@ async function json<T>(path: string, init: RequestInit = {}): Promise<T> {
       ...(init.headers || {}),
     },
   });
-  if (!res.ok) throw new Error(`API ${res.status}: ${await res.text()}`);
+  if (!res.ok) {
+    const text = await res.text();
+    let body: any;
+    try { body = JSON.parse(text); } catch { body = { error: text }; }
+    throw new ApiError(res.status, body, body.message || body.error || `API ${res.status}`);
+  }
   return res.json();
 }
 

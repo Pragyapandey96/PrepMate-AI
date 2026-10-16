@@ -11,6 +11,7 @@ const resumeSchema = new Schema({
   userId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
   filename: String,
   extracted: Schema.Types.Mixed, // { name, skills[], experience[], projects[], education[], certifications[] }
+  sourceText: String,
   createdAt: { type: Date, default: Date.now },
 });
 
@@ -35,6 +36,7 @@ const interviewSchema = new Schema({
   endedAt: Date,
   transcript: [{ speaker: String, text: String, ts: Date }],
   evaluation: Schema.Types.Mixed,
+  compatibility: Schema.Types.Mixed,
   overallScore: Number,
   createdAt: { type: Date, default: Date.now },
 });

@@ -26,16 +26,27 @@ function mergeTranscript(current: string, incoming: string): string {
 }
 
 function liveErrorMessage(error: unknown): string {
-  const err = error as { status?: number; code?: number | string; message?: string } | null;
+  const event = error as { error?: unknown; status?: number; code?: number | string; message?: string } | null;
+  const nested = event?.error as { status?: number; code?: number | string; message?: string } | undefined;
+  const err = nested || event;
   const status = Number(err?.status || err?.code);
-  const message = err?.message || '';
+  const message = [err?.message, event?.message].filter(Boolean).join(' ');
   if (status === 429 || /resource.?exhausted|rate.?limit/i.test(message)) {
     return 'Gemini is temporarily rate limited. Please wait a moment and try again.';
+  }
+  if (status === 401 || status === 403 || /unauthenticated|permission.?denied|api.?key/i.test(message)) {
+    return 'Gemini Live rejected the API credentials. Check GEMINI_API_KEY and confirm Live API access is enabled.';
+  }
+  if (status === 404 || /model.*not found|not supported for.*live/i.test(message)) {
+    return 'The configured Gemini Live model is unavailable to this API key. Check GEMINI_LIVE_MODEL.';
   }
   if (status === 400 || /invalid.?argument|unsupported model/i.test(message)) {
     return 'The configured Gemini Live model rejected this session. Check GEMINI_LIVE_MODEL.';
   }
-  return 'Gemini Live disconnected. Check your connection and try again.';
+  if (/timeout/i.test(message)) {
+    return 'Gemini Live did not finish connecting in time. Check backend network access and try again.';
+  }
+  return 'Gemini Live could not connect. Check backend network access, GEMINI_API_KEY permissions, and GEMINI_LIVE_MODEL.';
 }
 
 export class GeminiLiveProvider implements VoiceProvider {
@@ -57,6 +68,9 @@ export class GeminiLiveProvider implements VoiceProvider {
     let outputTranscript = '';
     let outputTranscriptFinal = false;
     let transcriptTimer: ReturnType<typeof setTimeout> | undefined;
+    let connectionTimer: ReturnType<typeof setTimeout> | undefined;
+    let failureReported = false;
+    let rejectConnecting: ((error: unknown) => void) | undefined;
     let writeQueue = Promise.resolve();
     let inboundQueue = Promise.resolve();
     let finalization: Promise<void> | undefined;
@@ -93,6 +107,14 @@ export class GeminiLiveProvider implements VoiceProvider {
         if (notifyClient) safeSend(clientWs, { type: 'ended' });
       })();
       return finalization;
+    };
+
+    const reportConnectionFailure = (error: unknown) => {
+      if (failureReported) return;
+      failureReported = true;
+      safeSend(clientWs, { type: 'error', message: liveErrorMessage(error) });
+      if (clientWs.readyState === clientWs.OPEN) clientWs.close(1011, 'gemini_live_connection_failed');
+      if (!session) rejectConnecting?.(error);
     };
 
     const handleServerMessage = (message: LiveServerMessage) => {
@@ -167,7 +189,7 @@ export class GeminiLiveProvider implements VoiceProvider {
     };
 
     try {
-      session = await this.ai.live.connect({
+      const connecting = this.ai.live.connect({
         model,
         config: {
           responseModalities: [Modality.AUDIO],
@@ -179,21 +201,36 @@ export class GeminiLiveProvider implements VoiceProvider {
         callbacks: {
           onmessage: handleServerMessage,
           onerror: (event) => {
-            safeSend(clientWs, { type: 'error', message: liveErrorMessage((event as any).error || event) });
-            if (clientWs.readyState === clientWs.OPEN) clientWs.close(1011, 'gemini_live_error');
+            reportConnectionFailure(event);
           },
-          onclose: () => {
+          onclose: (event) => {
             if (!ending) {
-              safeSend(clientWs, { type: 'error', message: 'Gemini Live disconnected. Your saved transcript is still available.' });
-              if (clientWs.readyState === clientWs.OPEN) clientWs.close(1011, 'gemini_live_disconnected');
+              reportConnectionFailure(event);
             }
           },
         },
       });
+      // A failed provider websocket can emit error/close without rejecting connect().
+      // Bound setup time and close a late session if the browser has already left.
+      void connecting.then((lateSession) => {
+        if (failureReported || clientWs.readyState !== clientWs.OPEN) lateSession.close();
+      }).catch(() => undefined);
+      session = await Promise.race([
+        connecting,
+        new Promise<Session>((_, reject) => { rejectConnecting = reject; }),
+        new Promise<Session>((_, reject) => {
+          connectionTimer = setTimeout(() => {
+            const timeout = new Error('Gemini Live connection timeout');
+            (timeout as Error & { code: string }).code = 'LIVE_CONNECT_TIMEOUT';
+            reject(timeout);
+          }, Number(process.env.GEMINI_LIVE_CONNECT_TIMEOUT_MS || 20_000));
+        }),
+      ]);
     } catch (error) {
-      safeSend(clientWs, { type: 'error', message: liveErrorMessage(error) });
-      clientWs.close(1011, 'gemini_live_unavailable');
+      reportConnectionFailure(error);
       return;
+    } finally {
+      if (connectionTimer) clearTimeout(connectionTimer);
     }
 
     if (clientWs.readyState !== clientWs.OPEN) {

@@ -6,10 +6,11 @@ export function History() {
   const [items, setItems] = useState<any[]>([]);
   const [error, setError] = useState('');
   useEffect(() => { api.listInterviews().then(setItems).catch(e => setError(e.message)); }, []);
-  return <div className="p-8 max-w-5xl"><div className="flex items-center justify-between"><div><h1 className="text-2xl font-semibold">Interview history</h1><p className="text-neutral-500 mt-1">Your saved practice sessions and AI reports.</p></div><Link to="/configure" className="px-3 py-2 rounded-md bg-accent text-white text-sm">New interview</Link></div>
-    {error && <p role="alert" className="mt-5 text-sm text-red-600">{error}</p>}
-    <div className="bg-white border rounded-lg mt-6 overflow-x-auto"><table className="w-full text-sm"><thead className="text-xs text-neutral-500 border-b"><tr><th className="text-left p-3">Date</th><th className="text-left">Role</th><th className="text-left">Type</th><th className="text-left">Status</th><th className="text-right p-3">Score / report</th></tr></thead><tbody>
-      {items.map(i => <tr key={i._id} className="border-b last:border-0"><td className="p-3 text-neutral-500">{new Date(i.createdAt).toLocaleDateString()}</td><td>{i.jdId?.title || 'Interview'}</td><td>{i.type} · {i.difficulty}</td><td className="capitalize">{i.status.replace('_', ' ')}</td><td className="text-right p-3">{i.status === 'evaluated' ? <Link className="text-accent-text hover:underline" to={`/report/${i._id}`}>View report · {i.overallScore}</Link> : '—'}</td></tr>)}
-      {!items.length && <tr><td colSpan={5} className="p-10 text-center text-neutral-400">No interviews recorded yet.</td></tr>}
-    </tbody></table></div></div>;
+  return <div className="pm-content-page"><div className="pm-page-topline"><div className="pm-page-heading"><span className="pm-eyebrow">Your practice archive</span><h1 className="pm-page-title">Interview history.</h1><p className="pm-page-subtitle">Review saved sessions and open completed AI reports.</p></div><Link to="/resume?flow=interview" className="pm-button pm-button-primary">New interview →</Link></div>
+    {error && <div role="alert" className="pm-alert">We couldn’t load your interview history. {error}</div>}
+    <section className="pm-card pm-history-card"><div className="pm-panel-head"><div><h2 className="pm-card-title">All sessions</h2><p className="pm-page-subtitle">{items.length} {items.length === 1 ? 'session' : 'sessions'}</p></div></div><div className="overflow-x-auto"><table className="pm-table"><thead><tr><th>Session date</th><th>Role</th><th>Interview track</th><th>Difficulty</th><th>Status</th><th>Report</th></tr></thead><tbody>
+      {items.map(i => <tr key={i._id}><td>{new Date(i.createdAt).toLocaleDateString()}</td><td><strong>{i.jdId?.title || 'Interview'}</strong></td><td>{i.type}</td><td>{i.difficulty}</td><td><span className="pm-status-pill">{i.status.replace('_', ' ')}</span></td><td>{i.status === 'evaluated' ? <Link to={`/report/${i._id}`}>View report · {i.overallScore}</Link> : <span className="pm-muted">Not ready</span>}</td></tr>)}
+      {!items.length && <tr><td colSpan={6} className="pm-empty-cell">No interviews recorded yet. Start a practice session to see it here.</td></tr>}
+    </tbody></table></div></section>
+  </div>;
 }

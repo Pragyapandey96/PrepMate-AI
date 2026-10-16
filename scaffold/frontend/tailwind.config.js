@@ -4,7 +4,7 @@ export default {
   theme: {
     extend: {
       colors: {
-        accent: { DEFAULT: '#0ea5c7', hover: '#0891b0', subtle: '#e6f7fb', text: '#0d6a86' },
+        accent: { DEFAULT: '#a73400', hover: '#872b00', subtle: '#f7e7da', text: '#963100' },
       },
       fontFamily: {
         sans: ['Inter', 'ui-sans-serif', 'system-ui'],

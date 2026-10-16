@@ -80,14 +80,17 @@ export class LiveAudioSession {
       audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       video: false,
     });
+    let context: AudioContext | undefined;
     try {
-      const context = new AudioContext();
+      context = new AudioContext();
       await context.resume();
       const source = context.createMediaStreamSource(stream);
-      const processor = context.createScriptProcessor(2048, 1, 1);
+      // 1024 frames produce ~21–23 ms chunks at common 44.1/48 kHz device rates.
+      const processor = context.createScriptProcessor(1024, 1, 1);
       return new LiveAudioSession(stream, context, processor, source, socket, onPlaybackStart, onPlaybackEnd);
     } catch (error) {
       stream.getTracks().forEach((track) => track.stop());
+      if (context && context.state !== 'closed') await context.close().catch(() => undefined);
       throw error;
     }
   }

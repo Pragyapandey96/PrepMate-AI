@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { Interview, Resume, JobDescription } from '../models/index.js';
 import { requireAuth, type AuthedRequest } from '../middleware/auth.js';
 import { evaluateInterview } from '../services/ai/evaluator.js';
+import { checkCompatibility, CompatibilityError } from '../services/compatibility.js';
 
 export const interviewRouter = Router();
 
@@ -17,11 +18,27 @@ interviewRouter.post('/', requireAuth, async (req: AuthedRequest, res, next) => 
       questionsPlanned: z.number().min(3).max(30),
     }).parse(req.body);
     const [resume, jd] = await Promise.all([
-      Resume.findOne({ _id: body.resumeId, userId: req.userId }).select('_id'),
-      JobDescription.findOne({ _id: body.jdId, userId: req.userId }).select('_id'),
+      Resume.findOne({ _id: body.resumeId, userId: req.userId }),
+      JobDescription.findOne({ _id: body.jdId, userId: req.userId }),
     ]);
     if (!resume || !jd) return res.status(404).json({ error: 'resume_or_job_description_not_found' });
-    const doc = await Interview.create({ ...body, userId: req.userId, status: 'created' });
+    let compatibility;
+    try {
+      compatibility = await checkCompatibility(
+        resume.sourceText || '', resume.extracted, jd.raw || '', jd.extracted,
+      );
+    } catch (error) {
+      if (error instanceof CompatibilityError) return res.status(error.status).json({ error: error.message });
+      throw error;
+    }
+    if (!compatibility.matches) {
+      return res.status(422).json({
+        error: 'resume_job_mismatch',
+        message: 'Your resume does not appear to match this job description. Please check the job description or upload a more relevant resume.',
+        compatibility,
+      });
+    }
+    const doc = await Interview.create({ ...body, userId: req.userId, status: 'created', compatibility });
     res.json(doc);
   } catch (e) { next(e); }
 });
@@ -52,6 +69,19 @@ interviewRouter.post('/:id/end', requireAuth, async (req: AuthedRequest, res, ne
     const doc = await Interview.findOne({ _id: req.params.id, userId: req.userId }).populate('jdId', 'title company');
     if (!doc) return res.status(404).json({ error: 'not_found' });
     if (doc.status === 'evaluated' || doc.status === 'ended') return res.json({ ok: true, status: doc.status });
+    if (!doc.compatibility?.matches) {
+      const [resume, jd] = await Promise.all([
+        Resume.findOne({ _id: doc.resumeId, userId: doc.userId }),
+        JobDescription.findOne({ _id: doc.jdId, userId: doc.userId }),
+      ]);
+      if (!resume || !jd) return res.status(404).json({ error: 'resume_or_job_description_not_found' });
+      const compatibility = await checkCompatibility(resume.sourceText || '', resume.extracted, jd.raw || '', jd.extracted);
+      doc.compatibility = compatibility;
+      if (!compatibility.matches) {
+        await doc.save();
+        return res.status(422).json({ error: 'resume_job_mismatch', compatibility });
+      }
+    }
     doc.status = 'ended';
     doc.endedAt = new Date();
     await doc.save();

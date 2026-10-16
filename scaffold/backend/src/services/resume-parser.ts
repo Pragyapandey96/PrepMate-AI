@@ -16,6 +16,11 @@ export interface ParsedResume {
   certifications: string[];
 }
 
+export interface ResumeParseResult {
+  extracted: ParsedResume;
+  sourceText: string;
+}
+
 const SKILL_KEYWORDS = [
   'Java','JavaScript','TypeScript','Python','Go','Rust','C++','C#',
   'React','Vue','Angular','Next.js','Node.js','Express','Django','Flask',
@@ -26,16 +31,27 @@ const SKILL_KEYWORDS = [
   'DSA','System Design','Algorithms',
 ];
 
-export async function parseResume(buf: Buffer, mime: string): Promise<ParsedResume> {
+export async function parseResume(buf: Buffer, mime: string): Promise<ResumeParseResult> {
   let text = '';
-  if (mime === 'application/pdf') {
-    const r = await pdfParse(buf);
-    text = r.text;
-  } else {
-    const r = await mammoth.extractRawText({ buffer: buf });
-    text = r.value;
+  try {
+    if (mime === 'application/pdf') {
+      const r = await pdfParse(buf);
+      text = r.text;
+    } else {
+      const r = await mammoth.extractRawText({ buffer: buf });
+      text = r.value;
+    }
+  } catch {
+    const error = new Error('resume_unreadable') as Error & { status: number };
+    error.status = 422;
+    throw error;
   }
-  return extractFromText(text);
+  if (!text.trim()) {
+    const error = new Error('resume_unreadable') as Error & { status: number };
+    error.status = 422;
+    throw error;
+  }
+  return { extracted: extractFromText(text), sourceText: text.slice(0, 40_000) };
 }
 
 function extractFromText(text: string): ParsedResume {
