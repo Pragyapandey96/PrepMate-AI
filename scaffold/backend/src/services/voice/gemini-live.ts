@@ -4,7 +4,9 @@ import type { RawData, WebSocket } from 'ws';
 import type { VoiceProvider, VoiceContext } from './provider.js';
 
 const SAMPLE_RATE = 16_000;
+const OUTPUT_SAMPLE_RATE = 24_000;
 const MAX_AUDIO_FRAME_BYTES = 128 * 1024;
+const AUDIO_DIAGNOSTIC_INTERVAL_MS = 5_000;
 
 function safeSend(ws: WebSocket, message: Record<string, unknown>) {
   if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(message));
@@ -49,6 +51,16 @@ function liveErrorMessage(error: unknown): string {
   return 'Gemini Live could not connect. Check backend network access, GEMINI_API_KEY permissions, and GEMINI_LIVE_MODEL.';
 }
 
+function diagnosticError(error: unknown) {
+  const value = error as { name?: string; message?: string; status?: number; code?: string | number } | null;
+  return {
+    name: value?.name || 'Error',
+    status: value?.status,
+    code: value?.code,
+    message: (value?.message || 'unknown error').replace(/([?&]key=)[^&\s]+/gi, '$1[redacted]'),
+  };
+}
+
 export class GeminiLiveProvider implements VoiceProvider {
   private ai: GoogleGenAI;
 
@@ -74,6 +86,44 @@ export class GeminiLiveProvider implements VoiceProvider {
     let writeQueue = Promise.resolve();
     let inboundQueue = Promise.resolve();
     let finalization: Promise<void> | undefined;
+    let inboundAudioFrames = 0;
+    let inboundAudioBytes = 0;
+    let lastInboundAudioLogAt = 0;
+    let outboundAudioChunks = 0;
+    let outboundAudioBytes = 0;
+    let lastOutboundAudioLogAt = 0;
+    let lastInputTranscriptionLogAt = 0;
+
+    const logAudioProgress = (direction: 'input-forwarded' | 'output-received', bytes: number) => {
+      const now = Date.now();
+      if (direction === 'input-forwarded') {
+        inboundAudioFrames += 1;
+        inboundAudioBytes += bytes;
+        if (inboundAudioFrames === 1 || now - lastInboundAudioLogAt >= AUDIO_DIAGNOSTIC_INTERVAL_MS) {
+          console.info('[voice] microphone PCM forwarded to Gemini Live', {
+            sessionId: ctx.sessionId,
+            frames: inboundAudioFrames,
+            bytes: inboundAudioBytes,
+            sampleRate: SAMPLE_RATE,
+            format: 'signed PCM16 little-endian mono',
+          });
+          lastInboundAudioLogAt = now;
+        }
+      } else {
+        outboundAudioChunks += 1;
+        outboundAudioBytes += bytes;
+        if (outboundAudioChunks === 1 || now - lastOutboundAudioLogAt >= AUDIO_DIAGNOSTIC_INTERVAL_MS) {
+          console.info('[voice] Gemini Live audio forwarded to browser', {
+            sessionId: ctx.sessionId,
+            chunks: outboundAudioChunks,
+            bytes: outboundAudioBytes,
+            sampleRate: OUTPUT_SAMPLE_RATE,
+            format: 'signed PCM16 little-endian mono',
+          });
+          lastOutboundAudioLogAt = now;
+        }
+      }
+    };
 
     const persist = (speaker: 'ai' | 'user', text: string): Promise<void> => {
       const normalized = text.trim();
@@ -102,7 +152,17 @@ export class GeminiLiveProvider implements VoiceProvider {
         if (transcriptTimer) clearTimeout(transcriptTimer);
         await flushAiTranscript();
         await writeQueue;
-        try { session?.sendRealtimeInput({ audioStreamEnd: true }); } catch { /* connection may already be gone */ }
+        try {
+          if (session) {
+            console.info('[voice] ending microphone stream', { sessionId: ctx.sessionId, inboundAudioFrames });
+            session.sendRealtimeInput({ audioStreamEnd: true });
+          }
+        } catch (error) {
+          console.warn('[voice] could not signal microphone stream end', {
+            sessionId: ctx.sessionId,
+            ...diagnosticError(error),
+          });
+        }
         session?.close();
         if (notifyClient) safeSend(clientWs, { type: 'ended' });
       })();
@@ -112,33 +172,64 @@ export class GeminiLiveProvider implements VoiceProvider {
     const reportConnectionFailure = (error: unknown) => {
       if (failureReported) return;
       failureReported = true;
+      console.error('[voice] Gemini Live connection error', { sessionId: ctx.sessionId, ...diagnosticError(error) });
       safeSend(clientWs, { type: 'error', message: liveErrorMessage(error) });
       if (clientWs.readyState === clientWs.OPEN) clientWs.close(1011, 'gemini_live_connection_failed');
       if (!session) rejectConnecting?.(error);
     };
 
     const handleServerMessage = (message: LiveServerMessage) => {
+      if (message.setupComplete) {
+        console.info('[voice] Gemini Live setup complete', { sessionId: ctx.sessionId, model });
+      }
+      if (message.goAway) {
+        console.warn('[voice] Gemini Live requested session shutdown', { sessionId: ctx.sessionId, timeLeft: message.goAway.timeLeft });
+      }
       const content = message.serverContent;
       if (!content) return;
 
-      if (content.interrupted) safeSend(clientWs, { type: 'audio-interrupted' });
+      if (content.interrupted) {
+        console.info('[voice] Gemini Live interrupted its response', { sessionId: ctx.sessionId });
+        safeSend(clientWs, { type: 'audio-interrupted' });
+      }
 
       for (const part of content.modelTurn?.parts || []) {
         const audio = part.inlineData;
-        if (audio?.data && audio.mimeType?.startsWith('audio/pcm')) {
+        if (audio?.data) {
+          const mimeType = audio.mimeType || `audio/pcm;rate=${OUTPUT_SAMPLE_RATE}`;
+          if (!mimeType.startsWith('audio/pcm')) {
+            console.warn('[voice] Gemini Live returned unsupported audio format', { sessionId: ctx.sessionId, mimeType });
+            continue;
+          }
           const data = typeof audio.data === 'string' ? audio.data : Buffer.from(audio.data).toString('base64');
-          safeSend(clientWs, { type: 'audio', data, mimeType: audio.mimeType });
+          logAudioProgress('output-received', Math.floor(data.length * 3 / 4));
+          safeSend(clientWs, { type: 'audio', data, mimeType });
         }
       }
 
       const interimInput = content.interimInputTranscription?.text?.trim();
-      if (interimInput) safeSend(clientWs, { type: 'interim', speaker: 'user', text: interimInput });
+      if (interimInput) {
+        const now = Date.now();
+        if (now - lastInputTranscriptionLogAt >= AUDIO_DIAGNOSTIC_INTERVAL_MS) {
+          console.info('[voice] Gemini Live interim user transcription', {
+            sessionId: ctx.sessionId,
+            characters: interimInput.length,
+          });
+          lastInputTranscriptionLogAt = now;
+        }
+        safeSend(clientWs, { type: 'interim', speaker: 'user', text: interimInput });
+      }
 
       const inputText = content.inputTranscription?.text?.trim();
       if (inputText && content.inputTranscription?.finished === false) {
         safeSend(clientWs, { type: 'interim', speaker: 'user', text: inputText });
       } else if (inputText) {
         answerCount += 1;
+        console.info('[voice] Gemini Live finalized user transcription', {
+          sessionId: ctx.sessionId,
+          characters: inputText.length,
+          answerCount,
+        });
         void persist('user', inputText).then(() => {
           safeSend(clientWs, { type: 'transcript', speaker: 'user', text: inputText, final: true });
         }).catch(() => safeSend(clientWs, { type: 'error', message: 'Your answer could not be saved. End this interview and try again.' }));
@@ -159,6 +250,11 @@ export class GeminiLiveProvider implements VoiceProvider {
 
       const outputText = content.outputTranscription?.text;
       if (outputText) {
+        console.info('[voice] Gemini Live output transcription received', {
+          sessionId: ctx.sessionId,
+          characters: outputText.length,
+          finished: Boolean(content.outputTranscription?.finished),
+        });
         outputTranscript = mergeTranscript(outputTranscript, outputText);
         outputTranscriptFinal = outputTranscriptFinal || Boolean(content.outputTranscription?.finished);
         safeSend(clientWs, { type: 'interim', speaker: 'ai', text: outputTranscript });
@@ -173,6 +269,11 @@ export class GeminiLiveProvider implements VoiceProvider {
       }
 
       if (content.turnComplete) {
+        console.info('[voice] Gemini Live turn complete', {
+          sessionId: ctx.sessionId,
+          generationComplete: Boolean(content.generationComplete),
+          waitingForInput: Boolean(content.waitingForInput),
+        });
         safeSend(clientWs, { type: 'state', state: 'listening' });
         if (endedByQuestionLimit) {
           if (transcriptTimer) clearTimeout(transcriptTimer);
@@ -189,13 +290,25 @@ export class GeminiLiveProvider implements VoiceProvider {
     };
 
     try {
+      console.info('[voice] connecting to Gemini Live', {
+        sessionId: ctx.sessionId,
+        model,
+        inputSampleRate: SAMPLE_RATE,
+        outputSampleRate: OUTPUT_SAMPLE_RATE,
+        automaticActivityDetection: false,
+      });
       const connecting = this.ai.live.connect({
         model,
         config: {
           responseModalities: [Modality.AUDIO],
-          systemInstruction: `${ctx.systemPrompt}\n\nConduct this as a spoken interview. Ask exactly one concise question at a time and wait for the candidate's spoken answer. Ask relevant follow-ups. Do not coach or evaluate during the interview. Respect the planned limit of ${ctx.questionsPlanned} questions; after the final answer, close warmly without another question.`,
-          inputAudioTranscription: {},
-          outputAudioTranscription: {},
+          systemInstruction: `${ctx.systemPrompt}\n\nConduct this interview entirely in English. Understand and transcribe the candidate's answers as English, and speak every question and response in clear, natural English. Do not switch languages. Listen carefully to each complete answer. Do not jump straight to a new planned topic: when an answer includes an experience, decision, claim, or result, ask a concise, specific probing follow-up about a concrete detail they mentioned. If an answer is vague or incomplete, ask a clarifying follow-up. Ask exactly one question at a time and wait for the spoken answer. Do not coach or evaluate during the interview. The limit of ${ctx.questionsPlanned} counts all candidate responses, including responses to follow-ups; use those available question slots to probe meaningfully and cover the planned topics. When the limit is reached, close warmly without another question.`,
+          inputAudioTranscription: { languageCodes: ['en-US'] },
+          outputAudioTranscription: { languageCodes: ['en-US'] },
+          realtimeInputConfig: {
+            automaticActivityDetection: {
+              disabled: true,
+            },
+          },
           speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } },
         },
         callbacks: {
@@ -238,6 +351,7 @@ export class GeminiLiveProvider implements VoiceProvider {
       return;
     }
 
+    console.info('[voice] Gemini Live session connected', { sessionId: ctx.sessionId, model });
     safeSend(clientWs, { type: 'ready', mode: 'live', model, sessionId: ctx.sessionId });
 
     clientWs.on('message', (data, isBinary) => {
@@ -254,7 +368,13 @@ export class GeminiLiveProvider implements VoiceProvider {
             session?.sendRealtimeInput({
               audio: { data: bytes.toString('base64'), mimeType: `audio/pcm;rate=${SAMPLE_RATE}` },
             });
-          } catch {
+            logAudioProgress('input-forwarded', bytes.byteLength);
+          } catch (error) {
+            console.error('[voice] failed to forward microphone PCM to Gemini Live', {
+              sessionId: ctx.sessionId,
+              bytes: bytes.byteLength,
+              ...diagnosticError(error),
+            });
             safeSend(clientWs, { type: 'error', message: 'Microphone audio could not be sent to Gemini. Check your connection.' });
           }
           return;
@@ -264,7 +384,34 @@ export class GeminiLiveProvider implements VoiceProvider {
         try { message = JSON.parse(rawBytes(data).toString('utf8')); }
         catch { safeSend(clientWs, { type: 'error', message: 'Received an invalid interview control message.' }); return; }
 
-        if (message.type === 'start' && !started) {
+        if (message.type === 'audio-start') {
+          if (!started || endedByQuestionLimit) return;
+          try {
+            console.info('[voice] candidate speech started; opening Gemini activity', { sessionId: ctx.sessionId });
+            session?.sendRealtimeInput({ activityStart: {} });
+          } catch (error) {
+            console.error('[voice] failed to signal candidate speech start', {
+              sessionId: ctx.sessionId,
+              ...diagnosticError(error),
+            });
+            safeSend(clientWs, { type: 'error', message: 'The interview could not start processing your answer. Please try again.' });
+          }
+        } else if (message.type === 'audio-end') {
+          if (!started || endedByQuestionLimit) return;
+          try {
+            console.info('[voice] candidate turn complete; ending Gemini activity', {
+              sessionId: ctx.sessionId,
+              inboundAudioFrames,
+            });
+            session?.sendRealtimeInput({ activityEnd: {} });
+          } catch (error) {
+            console.error('[voice] failed to signal candidate turn completion', {
+              sessionId: ctx.sessionId,
+              ...diagnosticError(error),
+            });
+            safeSend(clientWs, { type: 'error', message: 'The interview could not finish processing your answer. Please try again.' });
+          }
+        } else if (message.type === 'start' && !started) {
           started = true;
           safeSend(clientWs, { type: 'state', state: 'listening' });
           if (answerCount >= ctx.questionsPlanned) {

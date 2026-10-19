@@ -99,14 +99,32 @@ interviewRouter.post('/:id/end', requireAuth, async (req: AuthedRequest, res, ne
           type: doc.type,
           difficulty: doc.difficulty,
         });
-        doc.evaluation = evaluation;
-        doc.overallScore = evaluation?.overallScore;
-        doc.status = 'evaluated';
-        await doc.save();
+        const result = await Interview.updateOne(
+          { _id: doc._id, userId: doc.userId, status: 'ended' },
+          { $set: { evaluation, overallScore: evaluation?.overallScore, status: 'evaluated' } },
+        );
+        if (!result.matchedCount) {
+          console.warn('[evaluation] result was not saved because the interview is no longer ended', { interviewId: doc.id });
+        }
       } catch (err) {
-        console.error('evaluation failed', err);
-        doc.status = 'failed';
-        await doc.save();
+        console.error('[evaluation] failed after bounded retries; retaining saved transcript', {
+          interviewId: doc.id,
+          message: err instanceof Error ? err.message : 'unknown error',
+        });
+        try {
+          const result = await Interview.updateOne(
+            { _id: doc._id, userId: doc.userId, status: 'ended' },
+            { $set: { status: 'failed' } },
+          );
+          if (!result.matchedCount) {
+            console.warn('[evaluation] failure status was not saved because the interview is no longer ended', { interviewId: doc.id });
+          }
+        } catch (statusError) {
+          console.error('[evaluation] could not save final failure status; transcript remains persisted', {
+            interviewId: doc.id,
+            message: statusError instanceof Error ? statusError.message : 'unknown error',
+          });
+        }
       }
     })();
     res.json({ ok: true });

@@ -361,3 +361,55 @@ a { color: inherit; }
   *, *::before, *::after { animation: none !important; scroll-behavior: auto !important; transition: none !important; }
   .pm-reveal { opacity: 1 !important; transform: none !important; }
 }
+
+/* Shared motion polish */
+@keyframes pm-float { 0%, 100% { transform: translate3d(0,0,0); } 50% { transform: translate3d(0,-9px,0); } }
+@keyframes pm-wave { 0%, 100% { transform: scaleY(.28); opacity: .65; } 50% { transform: scaleY(1); opacity: 1; } }
+@keyframes pm-route-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes pm-error-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
+.pm-landing { overflow: hidden; }
+.pm-hero { position: relative; }
+.pm-hero::before, .pm-hero::after { content: ''; position: absolute; z-index: 0; pointer-events: none; border-radius: 50%; filter: blur(1px); }
+.pm-hero::before { width: 170px; height: 170px; right: 42%; top: 30px; background: radial-gradient(circle, rgba(79,142,255,.10), rgba(79,142,255,0) 70%); animation: pm-float 7s ease-in-out infinite; }
+.pm-hero::after { width: 220px; height: 220px; right: 1%; bottom: 2px; background: radial-gradient(circle, rgba(139,92,246,.09), rgba(139,92,246,0) 70%); animation: pm-float 9s 1s ease-in-out infinite; }
+.pm-hero-copy, .pm-hero-visual { position: relative; z-index: 1; }
+.pm-hero-copy h1 { animation: pm-enter .55s .08s cubic-bezier(.2,.7,.25,1) both; }
+.pm-hero-copy > p { animation: pm-enter .55s .17s cubic-bezier(.2,.7,.25,1) both; }
+.pm-hero-actions { animation: pm-enter .55s .25s cubic-bezier(.2,.7,.25,1) both; }
+.pm-auth-card { animation: pm-enter .48s cubic-bezier(.2,.7,.25,1) both; }
+.pm-auth-card input { transition: border-color .18s ease, box-shadow .18s ease; }
+.pm-auth-error { animation: pm-error-in .2s ease-out both; }
+.pm-voice-card { transition: background .28s ease, border-color .28s ease, box-shadow .28s ease; }
+.pm-voice-card[data-state='thinking'] { background: linear-gradient(140deg,#fff,#f0edff); }
+.pm-voice-card[data-state='ai-speaking'] { background: linear-gradient(140deg,#fff,#edf4ff); }
+.pm-voice-card[data-state='error'] { background: linear-gradient(140deg,#fff,#fff1ee); }
+.pm-audio-wave { align-items: center; display: flex; gap: 4px; height: 26px; justify-content: center; margin-top: 15px; opacity: .32; }
+.pm-audio-wave i { background: linear-gradient(180deg,#8465df,#5285db); border-radius: 4px; height: 22px; transform: scaleY(.24); width: 3px; }
+.pm-voice-card[data-state='ai-speaking'] .pm-audio-wave { opacity: 1; }
+.pm-voice-card[data-state='ai-speaking'] .pm-audio-wave i { animation: pm-wave .72s ease-in-out infinite; }
+.pm-voice-card[data-state='ai-speaking'] .pm-audio-wave i:nth-child(3n + 1) { animation-delay: -.18s; }
+.pm-voice-card[data-state='ai-speaking'] .pm-audio-wave i:nth-child(3n + 2) { animation-delay: -.42s; }
+.pm-voice-card[data-state='listening'][data-mode='live'] .pm-voice-indicator { border-color: #dce9ff; box-shadow: 0 0 0 7px #edf4ff; }
+.pm-report-score-card .pm-report-score { --score-angle: 0deg; position: relative; isolation: isolate; }
+.pm-report-score-card .pm-report-score::before { background: conic-gradient(#6482e8 var(--score-angle), #eee9f8 0); border-radius: 50%; content: ''; height: 84px; left: -16px; position: absolute; top: 50%; transform: translateY(-50%); width: 84px; z-index: -1; }
+.pm-report-score-card .pm-report-score::after { background: white; border-radius: 50%; content: ''; height: 72px; left: -10px; position: absolute; top: 50%; transform: translateY(-50%); width: 72px; z-index: -1; }
+.pm-report-list, .pm-report-section, .pm-report-score-card, .pm-report-breakdown { animation: pm-enter .45s cubic-bezier(.2,.7,.25,1) both; }
+.pm-report-breakdown { animation-delay: .08s; }
+.pm-report-columns > :nth-child(2) { animation-delay: .13s; }
+.pm-report-section { animation-delay: .17s; }
+.pm-report-page .pm-progress span { background: linear-gradient(90deg,#a73400,#6585e8); }
+.pm-app-main > *, .pm-interview-shell { animation: pm-route-in .24s ease-out both; }
+.pm-card:not(.pm-voice-card) { transition: box-shadow .2s ease, border-color .2s ease; }
+.pm-stat-card:hover, .pm-panel:hover, .pm-report-list:hover { border-color: #e5d7c8; box-shadow: 0 8px 24px rgba(76,47,26,.06); }
+@media (prefers-reduced-motion: reduce) {
+  .pm-hero::before, .pm-hero::after, .pm-auth-card, .pm-auth-error, .pm-app-main > *, .pm-interview-shell,
+  .pm-report-list, .pm-report-section, .pm-report-score-card, .pm-report-breakdown { animation: none !important; }
+  .pm-audio-wave i { animation: none !important; transform: scaleY(.35); }
+  .pm-voice-card[data-state='ai-speaking'] .pm-audio-wave { opacity: .7; }
+}
+@property --score-angle { syntax: '<angle>'; inherits: false; initial-value: 0deg; }
+@keyframes pm-ring-draw { to { --score-angle: var(--target-angle); } }
+@media (prefers-reduced-motion: no-preference) {
+  .pm-report-page[data-evaluated='true'] .pm-report-score { animation: pm-ring-draw .9s cubic-bezier(.2,.7,.25,1) both; }
+}
+

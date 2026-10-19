@@ -61,7 +61,11 @@ export function Interview() {
         setStatus('answering');
       } else if (msg.type === 'audio') {
         try { audioRef.current?.play(msg.data, msg.mimeType); }
-        catch { setError('Gemini returned audio that could not be played. You can end the interview and keep the saved transcript.'); setStatus('error'); }
+        catch (error) {
+          console.error('[voice] browser failed to play Gemini PCM', error);
+          setError('Gemini returned audio that could not be played. You can end the interview and keep the saved transcript.');
+          setStatus('error');
+        }
       } else if (msg.type === 'interim') {
         setInterim({ speaker: msg.speaker, text: msg.text });
         if (msg.speaker === 'ai' && mode === 'live') setStatus('ai-speaking');
@@ -86,6 +90,7 @@ export function Interview() {
       }
     };
     ws.onopen = () => { if (!disposed) setStatus('connecting'); };
+    ws.addEventListener('open', () => console.info('[voice] interview websocket connected', { mode }));
     ws.onerror = () => {
       if (!disposed) {
         const message = 'Could not connect to the interview service. Check your connection and try again.';
@@ -93,7 +98,8 @@ export function Interview() {
         setStatus('error');
       }
     };
-    ws.onclose = () => {
+    ws.onclose = (event) => {
+      console.info('[voice] interview websocket disconnected', { code: event.code, reason: event.reason || 'none' });
       if (wsRef.current === ws) setConnected(false);
       if (!disposed && !endingRef.current) {
         audioRef.current?.stopMicrophone();
@@ -130,9 +136,11 @@ export function Interview() {
         ws,
         () => setStatus('ai-speaking'),
         () => {
+          audioRef.current?.resumeMicrophoneAfterResponse();
           if (limitCompletionPendingRef.current) void endInterview();
           else if (startedRef.current && !endingRef.current) setStatus('listening');
         },
+        () => setStatus('thinking'),
       );
       if (wsRef.current !== ws || ws.readyState !== WebSocket.OPEN) {
         await audio.close();
@@ -143,6 +151,7 @@ export function Interview() {
       setStarted(true);
       setStatus('listening');
       ws.send(JSON.stringify({ type: 'start' }));
+      console.info('[voice] live microphone capture started');
     } catch (cause) {
       const denied = cause instanceof DOMException && (cause.name === 'NotAllowedError' || cause.name === 'PermissionDeniedError');
       setError(denied
@@ -177,6 +186,7 @@ export function Interview() {
     limitCompletionPendingRef.current = false;
     setStatus('ending');
     audioRef.current?.stopMicrophone();
+    console.info('[voice] live microphone capture stopped', { reason: 'interview ended' });
     const ws = wsRef.current;
     if (mode === 'live' && ws?.readyState === WebSocket.OPEN) {
       const acknowledged = new Promise<void>((resolve) => {
@@ -207,12 +217,12 @@ export function Interview() {
   return <div className="pm-interview-page">
     <header className="pm-interview-header"><Link to="/dashboard" className="pm-brand"><span className="pm-brand-mark">✦</span><span>PrepMate AI <small>STUDIO</small></span></Link><span className="pm-status-pill" aria-live="polite">● {statusLabel[status]}</span><span className="pm-status-pill">{mode === 'live' ? 'Live voice' : 'Text interview'}</span></header>
     <main className="pm-interview-shell"><div className="pm-interview-grid"><section className="pm-interview-main">
-      <div className="pm-card pm-voice-card" data-state={status} data-mode={mode} aria-live="polite"><div className="pm-voice-indicator">{mode === 'live' ? '♩' : '✎'}</div><p>{connected ? (status === 'listening' ? 'Listening to your response…' : status === 'ai-speaking' ? 'Your interviewer is speaking…' : status === 'thinking' ? 'Preparing the next question…' : 'Interview session connected') : 'Connecting to your interview session…'}</p></div>
+      <div className="pm-card pm-voice-card" data-state={status} data-mode={mode} aria-live="polite"><div className="pm-voice-indicator">{mode === 'live' ? '♩' : '✎'}</div><div className="pm-audio-wave" aria-hidden="true">{Array.from({ length: 13 }, (_, index) => <i key={index} />)}</div><p>{connected ? (status === 'listening' ? 'Listening to your response…' : status === 'ai-speaking' ? 'Your interviewer is speaking…' : status === 'thinking' ? 'Preparing the next question…' : 'Interview session connected') : 'Connecting to your interview session…'}</p></div>
       <div className="pm-card pm-question-card"><span className="pm-eyebrow">AI interviewer prompt</span><span className="pm-status-pill" style={{float:'right'}}>{statusLabel[status]}</span>{lastQuestion ? <h1>{lastQuestion.text}</h1> : <h1>{connected ? 'Your interview is ready.' : 'Connecting to your interview…'}</h1>}{interim && <div className="pm-turn ai"><span className="pm-turn-label">{interim.speaker === 'ai' ? 'Interviewer' : 'You'} · live transcript</span><p>{interim.text}…</p></div>}{!lastQuestion && mode === 'live' && <p className="pm-muted">Start the voice session when you are ready.</p>}
         {error && <div role="alert" className="pm-alert">{error}</div>}
         {mode === 'text' && <form onSubmit={submitAnswer} className="pm-answer-form"><label>Your answer<textarea value={answer} onChange={event => setAnswer(event.target.value)} disabled={!connected || status !== 'answering'} placeholder={status === 'thinking' ? 'Preparing the next question…' : 'Type your answer here'} rows={3}/></label><button className="pm-button pm-button-primary" type="submit" disabled={!connected || status !== 'answering' || !answer.trim()}>Send answer</button></form>}
       </div>
-      <div className="pm-control-bar">{mode === 'live' && !started && <button className="pm-button pm-button-primary" onClick={startLiveInterview} disabled={!connected || status === 'error'}>Start voice interview</button>}{mode === 'live' && started && <button onClick={toggleMute} disabled={status === 'ending' || status === 'ended'}>{muted ? 'Unmute microphone' : 'Mute microphone'}</button>}{mode === 'live' && !started && <button onClick={() => { setTranscript([]); setInterim(null); setError(''); setMode('text'); }}>Switch to text</button>}{mode === 'text' && !started && <button onClick={() => { setTranscript([]); setInterim(null); setError(''); setMode('live'); }}>Switch to voice</button>}{status !== 'ending' && status !== 'ended' && <button className="pm-end-button" onClick={endInterview}>End interview</button>}</div>
+      <div className="pm-control-bar">{mode === 'live' && !started && <button className="pm-button pm-button-primary" onClick={startLiveInterview} disabled={!connected || status === 'error'}>Start voice interview</button>}{mode === 'live' && started && <button onClick={toggleMute} disabled={status === 'ending' || status === 'ended'}>{muted ? 'Unmute microphone' : 'Mute microphone'}</button>}{mode === 'live' && started && status === 'listening' && <button className="pm-button pm-button-primary" onClick={() => { if (audioRef.current?.finishCandidateTurn('button clicked')) setStatus('thinking'); }}>Done answering</button>}{mode === 'live' && !started && <button onClick={() => { setTranscript([]); setInterim(null); setError(''); setMode('text'); }}>Switch to text</button>}{mode === 'text' && !started && <button onClick={() => { setTranscript([]); setInterim(null); setError(''); setMode('live'); }}>Switch to voice</button>}{status !== 'ending' && status !== 'ended' && <button className="pm-end-button" onClick={endInterview}>End interview</button>}</div>
     </section><aside className="pm-card pm-transcript"><div className="pm-panel-head"><h2 className="pm-card-title">Transcript</h2><span className="pm-eyebrow">{transcript.length} turns</span></div>{transcript.length ? transcript.map((turn,index)=><article key={`${index}-${turn.speaker}`} className={`pm-turn ${turn.speaker === 'ai' ? 'ai' : 'user'}`}><span className="pm-turn-label">{turn.speaker === 'ai' ? 'AI interviewer' : 'You'}</span><p>{turn.text}</p></article>) : <p className="pm-page-subtitle">Your conversation will appear here as you practice.</p>}{interim && <div ref={transcriptEndRef}/>}</aside></div></main>
   </div>;
 }

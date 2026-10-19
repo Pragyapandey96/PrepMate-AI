@@ -48,6 +48,12 @@ export function attachVoiceGateway(wss: WebSocketServer) {
       interview.startedAt ||= new Date();
       await interview.save();
 
+      console.info('[voice] authenticated interview connection', {
+        sessionId,
+        mode,
+        provider: mode === 'live' ? requestedProvider : 'web-speech',
+        transcriptTurns: interview.transcript.length,
+      });
       const systemPrompt = buildSystemPrompt({ resume: resume?.extracted, jd: jd?.extracted, interview });
       const provider: VoiceProvider = mode === 'live' ? new GeminiLiveProvider() : new WebSpeechProvider();
 
@@ -63,6 +69,11 @@ export function attachVoiceGateway(wss: WebSocketServer) {
             { _id: interview._id, userId: interview.userId },
             { $push: { transcript: { ...turn, ts: new Date() } } },
           );
+          console.info('[voice] transcript persisted', {
+            sessionId,
+            speaker: turn.speaker,
+            characters: turn.text.length,
+          });
         },
       });
     } catch (e) {

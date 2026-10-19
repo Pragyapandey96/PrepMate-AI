@@ -4,6 +4,28 @@ import { api } from '../services/api';
 
 type DashboardData = { total: number; avg: number; bestTechnical: number; avgCommunication: number; recent: any[]; trend: { date: string; score: number }[] };
 
+function AnimatedMetric({ value }: { value: number | string }) {
+  const text = String(value);
+  const match = text.match(/^(\d+)(.*)$/);
+  const [shown, setShown] = useState(text);
+  useEffect(() => {
+    if (!match || window.matchMedia('(prefers-reduced-motion: reduce)').matches) { setShown(text); return; }
+    const target = Number(match[1]);
+    const suffix = match[2];
+    const start = performance.now();
+    let frame = 0;
+    const tick = (now: number) => {
+      const progress = Math.min(1, (now - start) / 650);
+      const eased = 1 - (1 - progress) ** 3;
+      setShown(`${Math.round(target * eased)}${suffix}`);
+      if (progress < 1) frame = requestAnimationFrame(tick);
+    };
+    frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
+  }, []);
+  return <>{shown}</>;
+}
+
 function ScoreChart({ points, loading, error }: { points: DashboardData['trend']; loading: boolean; error: string }) {
   if (loading) return <div className="h-48 grid place-items-center text-sm text-neutral-400" role="status">Loading your score trend…</div>;
   if (error) return <div className="h-48 grid place-items-center text-sm text-neutral-400" role="status">Your score trend is unavailable.</div>;
@@ -47,7 +69,7 @@ export function Dashboard() {
   const cards = [{ label: 'Evaluated interviews', value: data.total }, { label: 'Average score', value: data.total ? `${data.avg}/100` : '—' }, { label: 'Best technical', value: data.bestTechnical ? `${data.bestTechnical}/100` : '—' }, { label: 'Average communication', value: data.avgCommunication ? `${data.avgCommunication}/100` : '—' }];
   return <div className="pm-dashboard" data-loaded={dataLoaded} data-animate-progress={animateProgress}><section className="pm-dashboard-hero"><div><span className="pm-eyebrow">Your practice space</span><h1>Welcome back{firstName ? `, ${firstName}` : ''}.</h1><p>Review your interviews, see your score trend, and choose what to practice next.</p></div><Link to="/resume?flow=interview" className="pm-button pm-button-primary">Start new interview →</Link></section>
     {error && <p role="alert" className="mt-4 text-sm text-red-600">{error}</p>}
-    <div className="pm-stat-grid">{cards.map((c,i)=><section key={c.label} className="pm-card pm-stat-card"><div className="pm-metric-label">{c.label}</div><div className="pm-metric-value">{c.value}</div><div className="pm-stat-foot">{i === 0 ? 'Saved evaluations' : 'Based on completed interviews'}</div></section>)}</div>
+    <div className="pm-stat-grid">{cards.map((c,i)=><section key={c.label} className="pm-card pm-stat-card"><div className="pm-metric-label">{c.label}</div><div className="pm-metric-value"><AnimatedMetric value={c.value}/></div><div className="pm-stat-foot">{i === 0 ? 'Saved evaluations' : 'Based on completed interviews'}</div></section>)}</div>
     <div className="pm-dashboard-columns"><section className="pm-card pm-panel"><div className="pm-panel-head"><div><h2 className="pm-card-title">Your progress</h2><p className="pm-page-subtitle">Overall score from each evaluated interview.</p></div><Link to="/history">View history →</Link></div><div className="mt-4"><ScoreChart points={data.trend} loading={!dataLoaded && !error} error={error}/></div></section>
       <section className="pm-card pm-panel"><div className="pm-panel-head"><div><h2 className="pm-card-title">Quick start</h2><p className="pm-page-subtitle">Prepare your next practice session.</p></div></div><div className="pm-quick-links"><Link to="/resume?flow=interview"><strong>Configure an interview</strong><span>Choose materials, track, difficulty, and question count</span></Link><Link to="/resume"><strong>Upload a resume</strong><span>Add your experience to guide practice</span></Link><Link to="/jd"><strong>Analyze a job description</strong><span>Tailor questions to a role</span></Link></div></section></div>
     <section className="pm-card pm-activity"><div className="pm-panel pm-panel-head"><div><h2 className="pm-card-title">Recent activity</h2><p className="pm-page-subtitle">Your saved interview practice sessions.</p></div><Link to="/history">Full history →</Link></div>{data.recent.length ? <div className="overflow-x-auto"><table className="pm-table"><thead><tr><th>Session</th><th>Date</th><th>Track</th><th>Score</th><th>Report</th></tr></thead><tbody>{data.recent.map(i=><tr key={i._id}><td><strong>{i.jdId?.title || 'Interview'}</strong></td><td>{new Date(i.createdAt).toLocaleDateString()}</td><td><span className="pm-status-pill">{i.type}</span></td><td className="mono">{i.overallScore}/100</td><td><Link to={`/report/${i._id}`}>View report →</Link></td></tr>)}</tbody></table></div>:<div className="py-8 text-center text-sm text-neutral-400">Finish an interview to see your progress here.</div>}</section>
