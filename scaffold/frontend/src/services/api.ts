@@ -1,4 +1,10 @@
-// Thin API client. All requests go through Vite's /api proxy.
+
+const API_BASE_URL = (
+  import.meta.env.VITE_API_BASE_URL || ''
+).replace(/\/$/, '');
+
+// Empty base URL keeps local development working with Vite's proxy.
+
 
 const token = () => localStorage.getItem('pm.token') || '';
 
@@ -7,7 +13,7 @@ export class ApiError extends Error {
 }
 
 async function json<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const res = await fetch(`/api${path}`, {
+  const res = await fetch(`${API_BASE_URL}/api${path}`, {
     ...init,
     headers: {
       'Content-Type': 'application/json',
@@ -32,7 +38,7 @@ export const api = {
   uploadResume: async (file: File) => {
     const fd = new FormData();
     fd.append('file', file);
-    const res = await fetch('/api/resume/upload', {
+    const res = await fetch(`${API_BASE_URL}/api/resume/upload`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${token()}` },
       body: fd,

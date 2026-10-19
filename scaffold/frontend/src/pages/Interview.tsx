@@ -31,9 +31,18 @@ export function Interview() {
   useEffect(() => {
     let disposed = false;
     serverErrorRef.current = '';
-    const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const token = encodeURIComponent(localStorage.getItem('pm.token') || '');
-    const ws = new WebSocket(`${scheme}//${location.host}/ws/voice?sessionId=${encodeURIComponent(id || '')}&mode=${mode}&token=${token}`);
+   
+const token = encodeURIComponent(localStorage.getItem('pm.token') || '');
+const wsBase = import.meta.env.VITE_WS_BASE_URL || '';
+
+const wsUrl = wsBase
+  ? `${wsBase.replace(/\/$/, '')}/ws/voice`
+  : `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws/voice`;
+
+const ws = new WebSocket(
+  `${wsUrl}?sessionId=${encodeURIComponent(id || '')}&mode=${encodeURIComponent(mode)}&token=${token}`
+);
+
     ws.binaryType = 'arraybuffer';
     wsRef.current = ws;
 
